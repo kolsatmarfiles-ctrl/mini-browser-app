@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,12 @@ import {
   Alert,
   ActivityIndicator,
   Platform,
+  BackHandler,
+  AppState,
+  Keyboard,
+  KeyboardEvent,
+  NativeEventEmitter,
+  NativeModules,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import * as DocumentPicker from 'expo-document-picker';
@@ -30,10 +36,47 @@ export default function BrowserScreen() {
   const [showUrlList, setShowUrlList] = useState(false);
   const [loading, setLoading] = useState(false);
   const [newUrl, setNewUrl] = useState('');
+  const [selectedUrlIndex, setSelectedUrlIndex] = useState(0);
+  const webViewRef = useRef<WebView>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     loadAllowedUrls();
+    setupBackHandler();
+    setupKeyboardListener();
   }, []);
+
+  // Setup Back Button Handler
+  const setupBackHandler = () => {
+    const backAction = () => {
+      if (showUrlList) {
+        setShowUrlList(false);
+        return true;
+      }
+      // If in webview, go back in history
+      if (webViewRef.current) {
+        webViewRef.current.goBack();
+        return true;
+      }
+      return false;
+    };
+
+    const subscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      backAction
+    );
+
+    return () => subscription.remove();
+  };
+
+  // Setup Keyboard Listener for Arrow Keys and other controls
+  const setupKeyboardListener = () => {
+    const subscription = Keyboard.addListener('keyboardDidShow', (event) => {
+      // Handle keyboard events
+    });
+
+    return () => subscription.remove();
+  };
 
   const loadAllowedUrls = async () => {
     try {
@@ -149,6 +192,38 @@ export default function BrowserScreen() {
     }
   };
 
+  // Navigate to next URL with arrow keys
+  const navigateUrlList = (direction: 'up' | 'down') => {
+    if (!showUrlList) return;
+
+    let newIndex = selectedUrlIndex;
+    if (direction === 'up' && selectedUrlIndex > 0) {
+      newIndex = selectedUrlIndex - 1;
+    } else if (direction === 'down' && selectedUrlIndex < allowedUrls.length - 1) {
+      newIndex = selectedUrlIndex + 1;
+    }
+
+    setSelectedUrlIndex(newIndex);
+    // Scroll to selected item
+    if (scrollViewRef.current) {
+      scrollViewRef.current.scrollTo({
+        y: newIndex * 80,
+        animated: true,
+      });
+    }
+  };
+
+  // Scroll webview with arrow keys
+  const scrollWebView = (direction: 'up' | 'down') => {
+    if (showUrlList || !webViewRef.current) return;
+
+    const scrollAmount = direction === 'up' ? -100 : 100;
+    webViewRef.current.injectJavaScript(`
+      window.scrollBy(0, ${scrollAmount});
+      true;
+    `);
+  };
+
   return (
     <View style={styles.container}>
       {!showUrlList ? (
@@ -157,7 +232,10 @@ export default function BrowserScreen() {
           <View style={styles.header}>
             <TouchableOpacity
               style={styles.menuButton}
-              onPress={() => setShowUrlList(true)}
+              onPress={() => {
+                setShowUrlList(true);
+                setSelectedUrlIndex(0);
+              }}
             >
               <Text style={styles.menuButtonText}>☰ Links</Text>
             </TouchableOpacity>
@@ -169,6 +247,7 @@ export default function BrowserScreen() {
           {/* WebView */}
           {currentUrl ? (
             <WebView
+              ref={webViewRef}
               source={{ uri: currentUrl }}
               style={styles.webview}
               userAgent={
@@ -184,12 +263,37 @@ export default function BrowserScreen() {
                   );
                 }
               }}
+              scrollEnabled={true}
+              scalesPageToFit={true}
+              javaScriptEnabled={true}
             />
           ) : (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color="#007AFF" />
             </View>
           )}
+
+          {/* Bottom Controls for Flip Phone */}
+          <View style={styles.controlsBar}>
+            <TouchableOpacity
+              style={styles.controlButton}
+              onPress={() => webViewRef.current?.goBack()}
+            >
+              <Text style={styles.controlButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.controlButton}
+              onPress={() => webViewRef.current?.goForward()}
+            >
+              <Text style={styles.controlButtonText}>Forward →</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.controlButton}
+              onPress={() => webViewRef.current?.reload()}
+            >
+              <Text style={styles.controlButtonText}>⟳ Reload</Text>
+            </TouchableOpacity>
+          </View>
         </>
       ) : (
         /* URL Management Screen */
@@ -204,7 +308,11 @@ export default function BrowserScreen() {
             <Text style={styles.urlListTitle}>Allowed Links</Text>
           </View>
 
-          <ScrollView style={styles.urlListScroll}>
+          <ScrollView
+            ref={scrollViewRef}
+            style={styles.urlListScroll}
+            scrollEnabled={true}
+          >
             {/* Add New URL Section */}
             <View style={styles.addUrlSection}>
               <TextInput
@@ -241,26 +349,52 @@ export default function BrowserScreen() {
             {/* URL List */}
             <View style={styles.urlsListSection}>
               {allowedUrls.map((url, index) => (
-                <View key={index} style={styles.urlItem}>
-                  <TouchableOpacity
-                    style={styles.urlItemContent}
-                    onPress={() => handleUrlPress(url)}
-                  >
+                <TouchableOpacity
+                  key={index}
+                  style={[
+                    styles.urlItem,
+                    selectedUrlIndex === index && styles.urlItemSelected,
+                  ]}
+                  onPress={() => handleUrlPress(url)}
+                >
+                  <View style={styles.urlItemContent}>
                     <Text style={styles.urlItemText}>{url}</Text>
                     <Text style={styles.urlItemSubtext}>
                       {currentUrl === url ? '✓ Current' : 'Tap to open'}
                     </Text>
-                  </TouchableOpacity>
+                  </View>
                   <TouchableOpacity
                     style={styles.deleteButton}
                     onPress={() => handleRemoveUrl(url)}
                   >
                     <Text style={styles.deleteButtonText}>✕</Text>
                   </TouchableOpacity>
-                </View>
+                </TouchableOpacity>
               ))}
             </View>
           </ScrollView>
+
+          {/* URL List Controls */}
+          <View style={styles.urlListControls}>
+            <TouchableOpacity
+              style={styles.navButton}
+              onPress={() => navigateUrlList('up')}
+            >
+              <Text style={styles.navButtonText}>▲ Up</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.navButton}
+              onPress={() => navigateUrlList('down')}
+            >
+              <Text style={styles.navButtonText}>▼ Down</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.navButton}
+              onPress={() => handleUrlPress(allowedUrls[selectedUrlIndex])}
+            >
+              <Text style={styles.navButtonText}>✓ Open</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
     </View>
@@ -276,28 +410,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingVertical: 12,
     backgroundColor: '#f5f5f5',
-    borderBottomWidth: 1,
+    borderBottomWidth: 2,
     borderBottomColor: '#ddd',
   },
   menuButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     backgroundColor: '#007AFF',
-    borderRadius: 6,
-    marginRight: 10,
+    borderRadius: 8,
+    marginRight: 12,
   },
   menuButtonText: {
     color: '#fff',
     fontWeight: 'bold',
-    fontSize: 14,
+    fontSize: 16,
   },
   urlDisplay: {
     flex: 1,
-    fontSize: 12,
+    fontSize: 13,
     color: '#666',
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
   },
   webview: {
     flex: 1,
@@ -307,6 +441,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  controlsBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    backgroundColor: '#f5f5f5',
+    borderTopWidth: 2,
+    borderTopColor: '#ddd',
+    gap: 8,
+  },
+  controlButton: {
+    flex: 1,
+    backgroundColor: '#007AFF',
+    paddingVertical: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  controlButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
   urlListContainer: {
     flex: 1,
     backgroundColor: '#fff',
@@ -315,23 +470,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 15,
-    paddingVertical: 12,
+    paddingVertical: 14,
     backgroundColor: '#f5f5f5',
-    borderBottomWidth: 1,
+    borderBottomWidth: 2,
     borderBottomColor: '#ddd',
   },
   backButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     marginRight: 15,
   },
   backButtonText: {
-    fontSize: 16,
+    fontSize: 18,
     color: '#007AFF',
     fontWeight: '600',
   },
   urlListTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#333',
   },
@@ -344,42 +499,42 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   urlInput: {
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: '#ddd',
     borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    marginBottom: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    marginBottom: 12,
     backgroundColor: '#f9f9f9',
   },
   addButton: {
     backgroundColor: '#34C759',
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderRadius: 8,
     alignItems: 'center',
   },
   addButtonText: {
     color: '#fff',
     fontWeight: 'bold',
-    fontSize: 16,
+    fontSize: 17,
   },
   actionButtons: {
     flexDirection: 'row',
     marginBottom: 20,
-    gap: 10,
+    gap: 12,
   },
   actionButton: {
     flex: 1,
     backgroundColor: '#007AFF',
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderRadius: 8,
     alignItems: 'center',
   },
   actionButtonText: {
     color: '#fff',
     fontWeight: 'bold',
-    fontSize: 14,
+    fontSize: 15,
   },
   urlsListSection: {
     marginBottom: 20,
@@ -387,39 +542,64 @@ const styles = StyleSheet.create({
   urlItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    marginBottom: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    marginBottom: 12,
     backgroundColor: '#f9f9f9',
     borderRadius: 8,
-    borderLeftWidth: 4,
+    borderLeftWidth: 5,
     borderLeftColor: '#007AFF',
+  },
+  urlItemSelected: {
+    backgroundColor: '#E3F2FD',
+    borderLeftColor: '#FF9500',
   },
   urlItemContent: {
     flex: 1,
   },
   urlItemText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
     color: '#333',
     marginBottom: 4,
   },
   urlItemSubtext: {
-    fontSize: 12,
+    fontSize: 13,
     color: '#999',
   },
   deleteButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#FF3B30',
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 10,
+    marginLeft: 12,
   },
   deleteButtonText: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
+  },
+  urlListControls: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: '#f5f5f5',
+    borderTopWidth: 2,
+    borderTopColor: '#ddd',
+    gap: 10,
+  },
+  navButton: {
+    flex: 1,
+    backgroundColor: '#007AFF',
+    paddingVertical: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  navButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 14,
   },
 });
